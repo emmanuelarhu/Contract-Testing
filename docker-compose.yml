@@ -1,0 +1,82 @@
+# Pact Broker stack — runs locally on your machine, mirrors what you'd
+# deploy on Kubernetes at Cellulant.
+#
+# Services:
+#   - postgres:        backing database for the broker
+#   - pact-broker:     the broker itself (Ruby app, port 9292)
+#
+# Default credentials (CHANGE FOR PRODUCTION):
+#   Web UI:    http://localhost:9292
+#   Username:  pact_user
+#   Password:  pact_password
+#
+# Quick start:
+#   docker compose up -d
+#   open http://localhost:9292
+#
+# Reset everything:
+#   docker compose down -v
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: pact-broker-db
+    environment:
+      POSTGRES_USER: pactbrokeruser
+      POSTGRES_PASSWORD: pactbrokerpassword
+      POSTGRES_DB: pactbroker
+    volumes:
+      - pact-broker-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pactbrokeruser -d pactbroker"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - pact-net
+
+  pact-broker:
+    image: pactfoundation/pact-broker:latest
+    container_name: pact-broker
+    ports:
+      - "9292:9292"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Database connection
+      PACT_BROKER_DATABASE_USERNAME: pactbrokeruser
+      PACT_BROKER_DATABASE_PASSWORD: pactbrokerpassword
+      PACT_BROKER_DATABASE_HOST: postgres
+      PACT_BROKER_DATABASE_NAME: pactbroker
+
+      # Basic auth — anyone reading/writing needs these credentials
+      PACT_BROKER_ALLOW_PUBLIC_READ: "false"
+      PACT_BROKER_BASIC_AUTH_USERNAME: pact_user
+      PACT_BROKER_BASIC_AUTH_PASSWORD: pact_password
+
+      # Read-only credentials (use these in dashboards/monitoring)
+      PACT_BROKER_BASIC_AUTH_READ_ONLY_USERNAME: pact_readonly
+      PACT_BROKER_BASIC_AUTH_READ_ONLY_PASSWORD: pact_readonly_password
+
+      # Useful settings
+      PACT_BROKER_LOG_LEVEL: INFO
+      PACT_BROKER_PORT: 9292
+
+      # Webhook config — allow webhooks to any host (in prod, restrict this!)
+      PACT_BROKER_WEBHOOK_HOST_WHITELIST: "/.*/"
+
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:9292/diagnostic/status/heartbeat || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - pact-net
+
+volumes:
+  pact-broker-data:
+
+networks:
+  pact-net:
+    driver: bridge
