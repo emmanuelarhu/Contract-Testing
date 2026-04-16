@@ -1,13 +1,10 @@
 # =============================================================================
-# GitHub Actions CI for CONSUMER repo (e.g. ussd-flow-engine)
-# =============================================================================
-# Required GitHub Secrets (Settings → Secrets → Actions):
-#   PACT_BROKER_BASE_URL    = https://pact-broker.cellulant.internal
-#   PACT_BROKER_USERNAME    = (masked)
-#   PACT_BROKER_PASSWORD    = (masked)
+# GitHub Actions CI — CONSUMER (ussd-flow-engine)
 #
-# Pipeline flow:
-#   test → contract → can-i-deploy → deploy → record-deployment
+# Required Secrets (Settings → Secrets → Actions):
+#   PACT_BROKER_BASE_URL  /  PACT_BROKER_USERNAME  /  PACT_BROKER_PASSWORD
+#
+# Pipeline: test → pact-publish → deploy-staging | deploy-production
 # =============================================================================
 
 name: Consumer — Pact CI
@@ -26,135 +23,50 @@ env:
   PACT_BROKER_PASSWORD: ${{ secrets.PACT_BROKER_PASSWORD }}
 
 jobs:
-  # ===========================================================================
-  # Stage 1: Standard tests
-  # ===========================================================================
+  # ---------------------------------------------------------------------------
+  # 1. Unit tests
+  # ---------------------------------------------------------------------------
   unit-tests:
     name: Unit Tests
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: consumer
     steps:
       - uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: ./.github/actions/node-setup
         with:
-          node-version: "20"
-          cache: "npm"
-          cache-dependency-path: consumer/package-lock.json
+          working-directory: consumer
+      - run: npm test
+        working-directory: consumer
 
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Run tests
-        run: npm test
-
-  # ===========================================================================
-  # Stage 2: Run consumer Pact tests + publish contracts to broker
-  # ===========================================================================
-  consumer-pact-publish:
-    name: Generate & Publish Pact Contracts
+  # ---------------------------------------------------------------------------
+  # 2. Generate Pact contracts and publish to broker
+  # ---------------------------------------------------------------------------
+  pact-publish:
+    name: Publish Pact Contracts
     runs-on: ubuntu-latest
     needs: unit-tests
-    defaults:
-      run:
-        working-directory: consumer
     steps:
       - uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: ./.github/actions/node-setup
         with:
-          node-version: "20"
-          cache: "npm"
-          cache-dependency-path: consumer/package-lock.json
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Generate contracts
-        run: npm run test:pact
-
-      - name: Publish to Pact Broker
-        run: npm run pact:publish
-
-      - name: Upload pact files
-        uses: actions/upload-artifact@v4
+          working-directory: consumer
+      - run: npm run test:pact
+        working-directory: consumer
+      - run: npm run pact:publish
+        working-directory: consumer
+      - uses: actions/upload-artifact@v4
         with:
           name: pacts
           path: consumer/pacts/
           retention-days: 7
 
-  # ===========================================================================
-  # Stage 3: can-i-deploy — gate before deployment
-  # ===========================================================================
-  can-i-deploy-staging:
-    name: Can I Deploy? (staging)
-    runs-on: ubuntu-latest
-    needs: consumer-pact-publish
-    if: github.ref == 'refs/heads/main'
-    defaults:
-      run:
-        working-directory: consumer
-    env:
-      DEPLOY_ENV: staging
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: "npm"
-          cache-dependency-path: consumer/package-lock.json
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Check broker — safe to deploy to staging?
-        run: npm run can-i-deploy
-
-  can-i-deploy-production:
-    name: Can I Deploy? (production)
-    runs-on: ubuntu-latest
-    needs: consumer-pact-publish
-    if: startsWith(github.ref, 'refs/tags/')
-    environment:
-      name: production-gate  # requires manual approval in GitHub Environments
-    defaults:
-      run:
-        working-directory: consumer
-    env:
-      DEPLOY_ENV: production
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: "npm"
-          cache-dependency-path: consumer/package-lock.json
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Check broker — safe to deploy to production?
-        run: npm run can-i-deploy
-
-  # ===========================================================================
-  # Stage 4: Deploy + record deployment to broker
-  # ===========================================================================
+  # ---------------------------------------------------------------------------
+  # 3a. Gate + deploy → staging  (main branch only)
+  # ---------------------------------------------------------------------------
   deploy-staging:
     name: Deploy to Staging
     runs-on: ubuntu-latest
-    needs: can-i-deploy-staging
+    needs: pact-publish
     if: github.ref == 'refs/heads/main'
-    defaults:
-      run:
-        working-directory: consumer
     environment:
       name: staging
       url: https://staging.cellulant.internal
@@ -162,51 +74,37 @@ jobs:
       DEPLOY_ENV: staging
     steps:
       - uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: ./.github/actions/node-setup
         with:
-          node-version: "20"
-          cache: "npm"
-          cache-dependency-path: consumer/package-lock.json
+          working-directory: consumer
+      - run: npm run can-i-deploy
+        working-directory: consumer
+      - run: ./deploy.sh staging
+        working-directory: consumer
+      - run: npm run record-deployment
+        working-directory: consumer
 
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Deploy to staging
-        run: ./deploy.sh staging   # replace with your actual deploy step
-
-      - name: Record deployment in Pact Broker
-        run: npm run record-deployment
-
+  # ---------------------------------------------------------------------------
+  # 3b. Gate + deploy → production  (tags only, requires manual approval)
+  # ---------------------------------------------------------------------------
   deploy-production:
     name: Deploy to Production
     runs-on: ubuntu-latest
-    needs: can-i-deploy-production
+    needs: pact-publish
     if: startsWith(github.ref, 'refs/tags/')
-    defaults:
-      run:
-        working-directory: consumer
     environment:
-      name: production
+      name: production          # configure manual approval in GitHub Environments
       url: https://prod.cellulant.com
     env:
       DEPLOY_ENV: production
     steps:
       - uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: ./.github/actions/node-setup
         with:
-          node-version: "20"
-          cache: "npm"
-          cache-dependency-path: consumer/package-lock.json
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Deploy to production
-        run: ./deploy.sh production
-
-      - name: Record deployment in Pact Broker
-        run: npm run record-deployment
+          working-directory: consumer
+      - run: npm run can-i-deploy
+        working-directory: consumer
+      - run: ./deploy.sh production
+        working-directory: consumer
+      - run: npm run record-deployment
+        working-directory: consumer
