@@ -1,0 +1,117 @@
+# =============================================================================
+# GitLab CI for PROVIDER repo (e.g. payment-service)
+# =============================================================================
+# Drop this in as `.gitlab-ci.yml` at the repo root.
+#
+# Required CI/CD variables:
+#   PACT_BROKER_BASE_URL    = https://pact-broker.cellulant.internal
+#   PACT_BROKER_USERNAME    = (masked)
+#   PACT_BROKER_PASSWORD    = (masked, protected)
+#
+# Pipeline flow:
+#   test → contract-verification → can-i-deploy → deploy → record-deployment
+# =============================================================================
+
+image: node:20-alpine
+
+stages:
+  - test
+  - contract
+  - can-i-deploy
+  - deploy
+
+variables:
+  GIT_SHA: $CI_COMMIT_SHORT_SHA
+  GIT_BRANCH: $CI_COMMIT_REF_NAME
+
+.node_cache: &node_cache
+  cache:
+    key:
+      files:
+        - package-lock.json
+    paths:
+      - node_modules/
+
+# =============================================================================
+# Stage 1: Standard tests
+# =============================================================================
+unit-tests:
+  stage: test
+  <<: *node_cache
+  script:
+    - npm ci
+    - npm test
+
+# =============================================================================
+# Stage 2: Pull contracts from broker, verify, publish results back
+# =============================================================================
+provider-pact-verification:
+  stage: contract
+  <<: *node_cache
+  script:
+    - npm ci
+    - echo "🔌 Starting provider service in background..."
+    - npm start &
+    - SERVER_PID=$!
+    - sleep 10  # wait for service to be ready
+    - echo "✅ Verifying against contracts in broker..."
+    - npm run test:pact:broker
+    - kill $SERVER_PID || true
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "push" || $CI_PIPELINE_SOURCE == "merge_request_event"
+    # Also run when broker triggers us via webhook (see broker config below)
+    - if: $TRIGGERED_BY_PACT_CHANGED == "true"
+
+# =============================================================================
+# Stage 3: can-i-deploy
+# =============================================================================
+can-i-deploy-staging:
+  stage: can-i-deploy
+  variables:
+    DEPLOY_ENV: staging
+  script:
+    - npm ci
+    - npm run can-i-deploy
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+can-i-deploy-production:
+  stage: can-i-deploy
+  variables:
+    DEPLOY_ENV: production
+  script:
+    - npm ci
+    - npm run can-i-deploy
+  rules:
+    - if: $CI_COMMIT_TAG
+  when: manual
+
+# =============================================================================
+# Stage 4: Deploy + record deployment
+# =============================================================================
+deploy-staging:
+  stage: deploy
+  needs: [can-i-deploy-staging]
+  variables:
+    DEPLOY_ENV: staging
+  script:
+    - ./deploy.sh staging
+    - npm run record-deployment
+  environment:
+    name: staging
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+deploy-production:
+  stage: deploy
+  needs: [can-i-deploy-production]
+  variables:
+    DEPLOY_ENV: production
+  script:
+    - ./deploy.sh production
+    - npm run record-deployment
+  environment:
+    name: production
+  rules:
+    - if: $CI_COMMIT_TAG
+  when: manual
