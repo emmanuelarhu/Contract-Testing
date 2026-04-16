@@ -1,0 +1,128 @@
+# =============================================================================
+# GitLab CI for CONSUMER repo (e.g. ussd-flow-engine)
+# =============================================================================
+# Drop this in as `.gitlab-ci.yml` at the repo root.
+#
+# Required CI/CD variables (Settings → CI/CD → Variables in GitLab):
+#   PACT_BROKER_BASE_URL    = https://pact-broker.cellulant.internal
+#   PACT_BROKER_USERNAME    = (masked)
+#   PACT_BROKER_PASSWORD    = (masked, protected)
+#
+# Pipeline flow:
+#   test → contract → can-i-deploy → deploy → record-deployment
+# =============================================================================
+
+image: node:20-alpine
+
+stages:
+  - test
+  - contract
+  - can-i-deploy
+  - deploy
+
+variables:
+  GIT_SHA: $CI_COMMIT_SHORT_SHA
+  GIT_BRANCH: $CI_COMMIT_REF_NAME
+
+# ─── Cache node_modules between jobs ───
+.node_cache: &node_cache
+  cache:
+    key:
+      files:
+        - package-lock.json
+    paths:
+      - node_modules/
+
+# =============================================================================
+# Stage 1: Standard tests
+# =============================================================================
+unit-tests:
+  stage: test
+  <<: *node_cache
+  script:
+    - npm ci
+    - npm test
+  artifacts:
+    when: always
+    reports:
+      junit: junit.xml
+
+# =============================================================================
+# Stage 2: Run consumer Pact tests + publish contracts to broker
+# =============================================================================
+consumer-pact-publish:
+  stage: contract
+  <<: *node_cache
+  script:
+    - npm ci
+    - echo "🧪 Generating contracts..."
+    - npm run test:pact
+    - echo "📤 Publishing to Pact Broker..."
+    - npm run pact:publish
+  artifacts:
+    paths:
+      - pacts/
+    expire_in: 1 week
+  rules:
+    # Run on every branch — feature branches publish too, so providers can verify early
+    - if: $CI_PIPELINE_SOURCE == "push" || $CI_PIPELINE_SOURCE == "merge_request_event"
+
+# =============================================================================
+# Stage 3: can-i-deploy — gate before deployment
+# =============================================================================
+can-i-deploy-staging:
+  stage: can-i-deploy
+  variables:
+    DEPLOY_ENV: staging
+  script:
+    - npm ci
+    - echo "🔍 Asking broker if it's safe to deploy $GIT_SHA to staging..."
+    - npm run can-i-deploy
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+can-i-deploy-production:
+  stage: can-i-deploy
+  variables:
+    DEPLOY_ENV: production
+  script:
+    - npm ci
+    - npm run can-i-deploy
+  rules:
+    - if: $CI_COMMIT_TAG
+  when: manual
+
+# =============================================================================
+# Stage 4: Deploy + record deployment to broker
+# =============================================================================
+deploy-staging:
+  stage: deploy
+  needs: [can-i-deploy-staging]
+  variables:
+    DEPLOY_ENV: staging
+  script:
+    - echo "🚀 Deploying to staging..."
+    # - kubectl apply -f k8s/staging/   # your real deploy step here
+    - ./deploy.sh staging
+    - echo "📝 Recording deployment to broker..."
+    - npm run record-deployment
+  environment:
+    name: staging
+    url: https://staging.cellulant.internal
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+deploy-production:
+  stage: deploy
+  needs: [can-i-deploy-production]
+  variables:
+    DEPLOY_ENV: production
+  script:
+    - ./deploy.sh production
+    - npm run record-deployment
+  environment:
+    name: production
+    url: https://prod.cellulant.com
+  rules:
+    - if: $CI_COMMIT_TAG
+  when: manual
