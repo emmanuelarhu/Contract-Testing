@@ -107,7 +107,7 @@ pact-demo/
 ## GitLab CI Setup
 
 The `.gitlab-ci.yml` files in `consumer/` and `provider/` are **production-ready** —
-copy them into your real Cellulant repos as-is.
+copy them into your real Work repos as-is.
 
 ### Required GitLab Variables
 
@@ -115,7 +115,7 @@ In each repo: **Settings → CI/CD → Variables**
 
 | Variable | Value | Flags |
 |---|---|---|
-| `PACT_BROKER_BASE_URL` | `https://pact-broker.cellulant.internal` | — |
+| `PACT_BROKER_BASE_URL` | `https://pact-broker.Work.internal` | — |
 | `PACT_BROKER_USERNAME` | (your broker username) | masked |
 | `PACT_BROKER_PASSWORD` | (your broker password) | masked, protected |
 
@@ -141,7 +141,7 @@ pipeline runs automatically.
 3. Run the registration script:
 
 ```bash
-export PACT_BROKER_BASE_URL=https://pact-broker.cellulant.internal
+export PACT_BROKER_BASE_URL=https://pact-broker.Work.internal
 export PACT_BROKER_USERNAME=...
 export PACT_BROKER_PASSWORD=...
 export GITLAB_PROJECT_ID=12345
@@ -153,10 +153,10 @@ export PROVIDER_NAME=payment-service
 
 Now: consumer publishes pact → broker fires webhook → provider pipeline runs → results published back. Fully automated.
 
-## Deploying the Broker on Cellulant Kubernetes
+## Deploying the Broker on Work Kubernetes
 
 The `docker-compose.yml` is the local equivalent of what you'd run on K8s.
-For production at Cellulant:
+For production at Work:
 
 1. Use the official Helm chart: https://github.com/pact-foundation/pact-broker-chart
 2. Back it with managed Postgres (or your existing PG cluster)
@@ -184,7 +184,7 @@ trying to deploy. Either:
 Webhook isn't registered or is misconfigured. Check the broker's
 **Webhooks** page in the UI for delivery logs.
 
-## Cellulant-Specific Adaptations
+## Work-Specific Adaptations
 
 For your actual Tingg services:
 
